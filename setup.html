@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lumen Learning – One-time setup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700;800&family=Public+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<script>if(location.protocol==="file:")document.write('<div class="note" style="margin:0;border-radius:0;text-align:center">You opened this file directly, so sign-in cannot work. Upload all five files to a host, or run <b>npx serve</b> in this folder and open <b>http://localhost:3000</b>.</div>')</script>
+<section class="auth">
+  <div class="auth-side">
+    <div class="brand"><i></i>Lumen Learning</div>
+    <div>
+      <h1>Create the first administrator.</h1>
+      <p>This page works once. After the admin account exists it locks itself, and you should delete this file from your site.</p>
+    </div>
+    <small style="color:#8895b5">One-time setup</small>
+  </div>
+  <div class="auth-main">
+    <div class="box" id="panel"><p>Checking setup status…</p></div>
+  </div>
+</section>
+
+<script type="module">
+import { auth, db, $, esc, setMsg, friendly, createUserWithEmailAndPassword, signOut, doc, getDoc, writeBatch, serverTimestamp } from "./firebase.js";
+
+const panel = $("panel");
+const lockRef = doc(db, "config", "setup");
+
+function locked() {
+  panel.innerHTML = `<h2>Setup already completed</h2>
+    <p>An administrator account already exists, so this page is disabled.</p>
+    <div class="note">Delete <code>setup.html</code> from your hosting. It cannot create accounts any more, but there is no reason to keep it.</div>
+    <a class="btn full" style="display:block;text-align:center;text-decoration:none" href="admin.html">Go to admin sign-in</a>`;
+}
+
+function form() {
+  panel.innerHTML = `<form id="f">
+    <h2>Admin account</h2>
+    <p>Choose the details for the administrator.</p>
+    <label for="name">Full name</label><input id="name" required>
+    <label for="email">Email</label><input id="email" type="email" autocomplete="username" required>
+    <label for="pass">Password</label><input id="pass" type="password" minlength="8" autocomplete="new-password" required>
+    <label for="pass2">Confirm password</label><input id="pass2" type="password" minlength="8" autocomplete="new-password" required>
+    <div class="msg" id="msg" role="alert"></div>
+    <button class="btn full" id="btn" type="submit">Create administrator</button>
+  </form>`;
+  $("f").onsubmit = create;
+}
+
+async function create(e) {
+  e.preventDefault();
+  const btn = $("btn"), msg = $("msg");
+  const name = $("name").value.trim(), email = $("email").value.trim(), pass = $("pass").value;
+  if (pass !== $("pass2").value) return setMsg(msg, "Passwords do not match.", "err");
+  btn.disabled = true; setMsg(msg, "");
+  let cred = null;
+  try {
+    // Re-check right before creating
+    if ((await getDoc(lockRef)).exists()) return locked();
+    cred = await createUserWithEmailAndPassword(auth, email, pass);
+    // One atomic write: the admin profile and the lock flag
+    const batch = writeBatch(db);
+    batch.set(doc(db, "users", cred.user.uid), { name, email, role: "admin", createdAt: serverTimestamp(), loginCount: 0 });
+    batch.set(lockRef, { done: true, adminUid: cred.user.uid, at: serverTimestamp() });
+    await batch.commit();
+    await signOut(auth);
+    panel.innerHTML = `<h2>Administrator created</h2>
+      <p><strong>${esc(email)}</strong> can now sign in to the admin dashboard.</p>
+      <div class="note"><strong>Next, delete this page.</strong>
+        <ol class="steps"><li>Remove <code>setup.html</code> from your hosting or project folder.</li><li>Redeploy your site.</li></ol>
+        It is already locked, so it cannot create another admin.</div>
+      <a class="btn full" style="display:block;text-align:center;text-decoration:none" href="admin.html">Go to admin sign-in</a>`;
+  } catch (err) {
+    if (cred) { try { await cred.user.delete(); } catch {} }   // undo a half-finished setup
+    setMsg(msg, friendly(err), "err");
+    btn.disabled = false;
+  }
+}
+
+try { (await getDoc(lockRef)).exists() ? locked() : form(); }
+catch (e) { panel.innerHTML = `<h2>Cannot check setup</h2><p class="msg err">${esc(friendly(e))}</p><p>Publish the Firestore rules from the instructions, then reload.</p>`; }
+</script>
+</body>
+</html>

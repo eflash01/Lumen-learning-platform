@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lumen Learning – Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700;800&family=Public+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<script>if(location.protocol==="file:")document.write('<div class="note" style="margin:0;border-radius:0;text-align:center">You opened this file directly, so sign-in cannot work. Upload all five files to a host, or run <b>npx serve</b> in this folder and open <b>http://localhost:3000</b>.</div>')</script>
+
+<section id="authView" class="auth">
+  <div class="auth-side">
+    <div class="brand"><i></i>Lumen Learning</div>
+    <div>
+      <h1>Administrator sign-in.</h1>
+      <p>Create learner accounts, send their logins and see when people sign in.</p>
+    </div>
+    <small style="color:#8895b5">Administrators only.</small>
+  </div>
+  <div class="auth-main">
+    <form class="box" id="loginForm">
+      <h2>Admin sign in</h2>
+      <p>Use your administrator account.</p>
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="username" required>
+      <label for="pass">Password</label>
+      <input id="pass" type="password" autocomplete="current-password" required>
+      <div class="msg" id="loginMsg" role="alert"></div>
+      <button class="btn full" id="loginBtn" type="submit">Sign in</button>
+      <p style="margin:18px 0 0;font-size:14px"><a href="index.html" class="link">Go to learner sign-in</a></p>
+    </form>
+  </div>
+</section>
+
+<section id="appView" class="hidden">
+  <header class="top">
+    <div class="brand"><i></i>Lumen Learning</div>
+    <div class="who"><span id="whoName"></span><span class="tag">Admin</span><button class="btn ghost sm" id="logoutBtn">Sign out</button></div>
+  </header>
+  <main class="wrap" id="appMain"></main>
+</section>
+
+<script type="module">
+import { auth, auth2, db, $, esc, fmt, setMsg, friendly, loadProfile, signInAndRecord, signOut, onAuthStateChanged,
+  createUserWithEmailAndPassword, sendPasswordResetEmail, doc, setDoc, collection, getDocs, query, orderBy, limit, serverTimestamp } from "./firebase.js";
+
+let me = null, loggingIn = false, tab = "mine", users = [];
+
+$("loginForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const btn = $("loginBtn"), msg = $("loginMsg");
+  btn.disabled = true; setMsg(msg, ""); loggingIn = true;
+  try {
+    const p = await signInAndRecord($("email").value.trim(), $("pass").value);
+    if (p.role !== "admin") { await signOut(auth); throw { message: "This account is not an administrator." }; }
+    show(p);
+  } catch (err) { setMsg(msg, friendly(err), "err"); }
+  finally { loggingIn = false; btn.disabled = false; }
+});
+
+$("logoutBtn").addEventListener("click", () => signOut(auth));
+
+onAuthStateChanged(auth, async u => {
+  if (loggingIn) return;
+  if (!u) { me = null; $("appView").classList.add("hidden"); $("authView").classList.remove("hidden"); return; }
+  try {
+    const p = await loadProfile(u);
+    if (p && p.role === "admin") show(p);
+    else { await signOut(auth); setMsg($("loginMsg"), "This account is not an administrator.", "err"); }
+  } catch { signOut(auth); }
+});
+
+function show(p) {
+  me = p;
+  $("authView").classList.add("hidden"); $("appView").classList.remove("hidden");
+  $("whoName").textContent = p.name || p.email;
+  render();
+}
+
+async function render() {
+  $("appMain").innerHTML = `
+    <h2>Welcome back, ${esc((me.name || "").split(" ")[0] || "admin")}</h2>
+    <p class="sub">Every account you create is saved under your admin profile, so it is still here the next time you sign in.</p>
+    <div class="stats" id="stats"></div>
+    <div class="tabs" role="tablist">
+      <button class="${tab === "mine" ? "on" : ""}" data-t="mine">My accounts</button>
+      <button class="${tab === "all" ? "on" : ""}" data-t="all">All users</button>
+      <button class="${tab === "logins" ? "on" : ""}" data-t="logins">Login activity</button>
+    </div>
+    <div id="tabBody"><p class="empty">Loading…</p></div>`;
+  document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
+  try { await fetchUsers(); }
+  catch (e) { $("tabBody").innerHTML = `<p class="empty">${esc(friendly(e))}</p>`; return; }
+  stats();
+  tab === "logins" ? loginsTab() : accountsTab();
+}
+
+async function fetchUsers() {
+  users = (await getDocs(collection(db, "users"))).docs.map(d => ({ uid: d.id, ...d.data() }));
+}
+const mine = () => users.filter(u => u.createdBy === me.uid);
+const byCreated = (a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
+
+function stats() {
+  const m = mine().sort(byCreated);
+  $("stats").innerHTML = `
+    <div class="card"><strong>${m.length}</strong><span>Accounts you created</span></div>
+    <div class="card"><strong>${users.length}</strong><span>Total users</span></div>
+    <div class="card"><strong style="font-size:20px;line-height:1.7">${esc(m[0] ? fmt(m[0].createdAt) : "None yet")}</strong><span>Your latest account</span></div>`;
+}
+
+function table(rows, showBy) {
+  if (!rows.length) return `<p class="empty">${showBy ? "No users yet." : "You haven't created any accounts yet. Use the form to add the first one."}</p>`;
+  return `<table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Created</th>${showBy ? "<th>Created by</th>" : ""}<th>Last login</th><th>Logins</th></tr></thead><tbody>${
+    rows.map(u => `<tr><td>${esc(u.name)}</td><td>${esc(u.email)}</td><td>${esc(u.role)}</td><td>${esc(fmt(u.createdAt))}</td>${
+      showBy ? `<td>${esc(u.createdByEmail || (u.createdBy ? "Another admin" : "Setup"))}</td>` : ""}<td>${esc(fmt(u.lastLogin))}</td><td>${u.loginCount || 0}</td></tr>`).join("")
+  }</tbody></table>`;
+}
+
+function genPass() {
+  const chars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  return Array.from(crypto.getRandomValues(new Uint32Array(10)), n => chars[n % chars.length]).join("");
+}
+
+function accountsTab() {
+  if (tab === "all") { $("tabBody").innerHTML = `<div class="card tbl">${table([...users].sort(byCreated), true)}</div>`; return; }
+  $("tabBody").innerHTML = `
+    <div class="grid2">
+      <form class="card" id="newUser">
+        <h3 style="margin-bottom:14px">Create user</h3>
+        <label for="nName">Full name</label><input id="nName" required>
+        <label for="nEmail">Email</label><input id="nEmail" type="email" required>
+        <label for="nPass">Temporary password</label>
+        <input id="nPass" minlength="6" required value="${genPass()}">
+        <label for="nRole">Role</label>
+        <select id="nRole"><option value="student">Student</option><option value="admin">Admin</option></select>
+        <div class="msg" id="nMsg" role="alert"></div>
+        <button class="btn full" id="nBtn" type="submit">Create user</button>
+        <div id="credOut"></div>
+      </form>
+      <div class="card tbl" id="userList">${table(mine().sort(byCreated), false)}</div>
+    </div>`;
+  $("newUser").onsubmit = createUser;
+}
+
+async function createUser(e) {
+  e.preventDefault();
+  const btn = $("nBtn"), msg = $("nMsg");
+  const name = $("nName").value.trim(), email = $("nEmail").value.trim(), pass = $("nPass").value, role = $("nRole").value;
+  btn.disabled = true; setMsg(msg, "");
+  try {
+    const c = await createUserWithEmailAndPassword(auth2, email, pass);
+    try {
+      await setDoc(doc(db, "users", c.user.uid), { name, email, role, createdAt: serverTimestamp(), loginCount: 0, createdBy: me.uid, createdByEmail: me.email, createdByName: me.name || "" });
+    } catch (er) { await c.user.delete(); throw er; }
+    await signOut(auth2);
+    const url = location.href.replace(/admin\.html.*$/, "index.html");
+    const body = `Hi ${name},\n\nYour Lumen Learning account is ready.\n\nSign in: ${url}\nEmail: ${email}\nPassword: ${pass}\n\nTo choose your own password, use "Forgot your password?" on the sign-in page.`;
+    await fetchUsers(); stats(); $("userList").innerHTML = table(mine().sort(byCreated), false);
+    $("credOut").innerHTML = `<div class="cred">Account created and saved to your list.<br>Email: <code>${esc(email)}</code><br>Password: <code>${esc(pass)}</code></div>
+      <div class="row">
+        <a class="btn sm" style="text-decoration:none" href="mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent("Your Lumen Learning login")}&body=${encodeURIComponent(body)}">Email login details</a>
+        <button type="button" class="btn ghost sm" id="copyBtn">Copy details</button>
+        <button type="button" class="btn ghost sm" id="resetBtn">Send password reset link</button>
+      </div>`;
+    $("copyBtn").onclick = async () => { try { await navigator.clipboard.writeText(body); setMsg(msg, "Login details copied.", "ok"); } catch { setMsg(msg, "Copy blocked. Select the details above and copy them.", "err"); } };
+    $("resetBtn").onclick = async () => { try { await sendPasswordResetEmail(auth, email); setMsg(msg, "Reset link sent to " + email + ".", "ok"); } catch (er) { setMsg(msg, friendly(er), "err"); } };
+    ["nName", "nEmail"].forEach(i => $(i).value = ""); $("nPass").value = genPass();
+  } catch (err) { setMsg(msg, friendly(err), "err"); }
+  finally { btn.disabled = false; }
+}
+
+async function loginsTab() {
+  $("tabBody").innerHTML = `<div class="card tbl" id="logList"><p class="empty">Loading activity…</p></div>`;
+  try {
+    const snap = await getDocs(query(collection(db, "logins"), orderBy("at", "desc"), limit(200)));
+    const rows = snap.docs.map(d => d.data());
+    $("logList").innerHTML = rows.length ? `<table><thead><tr><th>User</th><th>Signed in</th></tr></thead><tbody>${
+      rows.map(r => `<tr><td>${esc(r.email)}</td><td>${esc(fmt(r.at))}</td></tr>`).join("")
+    }</tbody></table>` : `<p class="empty">No sign-ins recorded yet.</p>`;
+  } catch (e) { $("logList").innerHTML = `<p class="empty">${esc(friendly(e))}</p>`; }
+}
+</script>
+
+<section id="authView" class="auth">
+  <div class="auth-side">
+    <div class="brand"><i></i>Lumen Learning</div>
+    <div>
+      <h1>Administrator sign-in.</h1>
+      <p>Create learner accounts, send their logins and see when people sign in.</p>
+    </div>
+    <small style="color:#8895b5">Administrators only.</small>
+  </div>
+  <div class="auth-main">
+    <form class="box" id="loginForm">
+      <h2>Admin sign in</h2>
+      <p>Use your administrator account.</p>
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="username" required>
+      <label for="pass">Password</label>
+      <input id="pass" type="password" autocomplete="current-password" required>
+      <div class="msg" id="loginMsg" role="alert"></div>
+      <button class="btn full" id="loginBtn" type="submit">Sign in</button>
+      <p style="margin:18px 0 0;font-size:14px"><a href="index.html" class="link">Go to learner sign-in</a></p>
+    </form>
+  </div>
+</section>
+
+<section id="appView" class="hidden">
+  <header class="top">
+    <div class="brand"><i></i>Lumen Learning</div>
+    <div class="who"><span id="whoName"></span><span class="tag">Admin</span><button class="btn ghost sm" id="logoutBtn">Sign out</button></div>
+  </header>
+  <main class="wrap" id="appMain"></main>
+</section>
+
+<script type="module">
+import { auth, auth2, db, $, esc, fmt, setMsg, friendly, loadProfile, signInAndRecord, signOut, onAuthStateChanged,
+  createUserWithEmailAndPassword, sendPasswordResetEmail, doc, setDoc, collection, getDocs, query, orderBy, limit, serverTimestamp } from "./firebase.js";
+
+let me = null, loggingIn = false, tab = "mine", users = [];
+
+$("loginForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const btn = $("loginBtn"), msg = $("loginMsg");
+  btn.disabled = true; setMsg(msg, ""); loggingIn = true;
+  try {
+    const p = await signInAndRecord($("email").value.trim(), $("pass").value);
+    if (p.role !== "admin") { await signOut(auth); throw { message: "This account is not an administrator." }; }
+    show(p);
+  } catch (err) { setMsg(msg, friendly(err), "err"); }
+  finally { loggingIn = false; btn.disabled = false; }
+});
+
+$("logoutBtn").addEventListener("click", () => signOut(auth));
+
+onAuthStateChanged(auth, async u => {
+  if (loggingIn) return;
+  if (!u) { me = null; $("appView").classList.add("hidden"); $("authView").classList.remove("hidden"); return; }
+  try {
+    const p = await loadProfile(u);
+    if (p && p.role === "admin") show(p);
+    else { await signOut(auth); setMsg($("loginMsg"), "This account is not an administrator.", "err"); }
+  } catch { signOut(auth); }
+});
+
+function show(p) {
+  me = p;
+  $("authView").classList.add("hidden"); $("appView").classList.remove("hidden");
+  $("whoName").textContent = p.name || p.email;
+  render();
+}
+
+function render() {
+  $("appMain").innerHTML = `
+    <h2>Admin dashboard</h2>
+    <p class="sub">Create learner accounts and see when people sign in.</p>
+    <div class="tabs" role="tablist">
+      <button class="${tab === "users" ? "on" : ""}" data-t="users">Users</button>
+      <button class="${tab === "logins" ? "on" : ""}" data-t="logins">Login activity</button>
+    </div>
+    <div id="tabBody"></div>`;
+  document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
+  tab === "users" ? usersTab() : loginsTab();
+}
+
+function genPass() {
+  const chars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  return Array.from(crypto.getRandomValues(new Uint32Array(10)), n => chars[n % chars.length]).join("");
+}
+
+function usersTab() {
+  $("tabBody").innerHTML = `
+    <div class="grid2">
+      <form class="card" id="newUser">
+        <h3 style="margin-bottom:14px">Create user</h3>
+        <label for="nName">Full name</label><input id="nName" required>
+        <label for="nEmail">Email</label><input id="nEmail" type="email" required>
+        <label for="nPass">Temporary password</label>
+        <input id="nPass" minlength="6" required value="${genPass()}">
+        <label for="nRole">Role</label>
+        <select id="nRole"><option value="student">Student</option><option value="admin">Admin</option></select>
+        <div class="msg" id="nMsg" role="alert"></div>
+        <button class="btn full" id="nBtn" type="submit">Create user</button>
+        <div id="credOut"></div>
+      </form>
+      <div class="card tbl" id="userList"><p class="empty">Loading users…</p></div>
+    </div>`;
+  $("newUser").onsubmit = createUser;
+  loadUsers();
+}
+
+async function loadUsers() {
+  const box = $("userList");
+  try {
+    const snap = await getDocs(collection(db, "users"));
+    const rows = snap.docs.map(d => d.data()).sort((a, b) => (b.lastLogin?.seconds || 0) - (a.lastLogin?.seconds || 0));
+    box.innerHTML = rows.length ? `<table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Last login</th><th>Logins</th></tr></thead><tbody>${
+      rows.map(u => `<tr><td>${esc(u.name)}</td><td>${esc(u.email)}</td><td>${esc(u.role)}</td><td>${esc(fmt(u.lastLogin))}</td><td>${u.loginCount || 0}</td></tr>`).join("")
+    }</tbody></table>` : `<p class="empty">No users yet. Create the first one.</p>`;
+  } catch (e) { box.innerHTML = `<p class="empty">${esc(friendly(e))}</p>`; }
+}
+
+async function createUser(e) {
+  e.preventDefault();
+  const btn = $("nBtn"), msg = $("nMsg");
+  const name = $("nName").value.trim(), email = $("nEmail").value.trim(), pass = $("nPass").value, role = $("nRole").value;
+  btn.disabled = true; setMsg(msg, "");
+  try {
+    const c = await createUserWithEmailAndPassword(auth2, email, pass);
+    try {
+      await setDoc(doc(db, "users", c.user.uid), { name, email, role, createdAt: serverTimestamp(), loginCount: 0, createdBy: me.uid });
+    } catch (er) { await c.user.delete(); throw er; }
+    await signOut(auth2);
+    const url = location.href.replace(/admin\.html.*$/, "index.html");
+    const body = `Hi ${name},\n\nYour Lumen Learning account is ready.\n\nSign in: ${url}\nEmail: ${email}\nPassword: ${pass}\n\nTo choose your own password, use "Forgot your password?" on the sign-in page.`;
+    $("credOut").innerHTML = `<div class="cred">Account created.<br>Email: <code>${esc(email)}</code><br>Password: <code>${esc(pass)}</code></div>
+      <div class="row">
+        <button type="button" class="btn sm" id="mailBtn">Email login details</button>
+        <button type="button" class="btn ghost sm" id="copyBtn">Copy details</button>
+        <button type="button" class="btn ghost sm" id="resetBtn">Send password reset link</button>
+      </div>`;
+    $("mailBtn").onclick = () => location.href = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent("Your Lumen Learning login")}&body=${encodeURIComponent(body)}`;
+    $("copyBtn").onclick = async () => { await navigator.clipboard.writeText(body); setMsg(msg, "Login details copied.", "ok"); };
+    $("resetBtn").onclick = async () => { try { await sendPasswordResetEmail(auth, email); setMsg(msg, "Reset link sent to " + email + ".", "ok"); } catch (er) { setMsg(msg, friendly(er), "err"); } };
+    ["nName", "nEmail"].forEach(i => $(i).value = ""); $("nPass").value = genPass();
+    loadUsers();
+  } catch (err) { setMsg(msg, friendly(err), "err"); }
+  finally { btn.disabled = false; }
+}
+
+async function loginsTab() {
+  $("tabBody").innerHTML = `<div class="card tbl" id="logList"><p class="empty">Loading activity…</p></div>`;
+  try {
+    const snap = await getDocs(query(collection(db, "logins"), orderBy("at", "desc"), limit(200)));
+    const rows = snap.docs.map(d => d.data());
+    $("logList").innerHTML = rows.length ? `<table><thead><tr><th>User</th><th>Signed in</th></tr></thead><tbody>${
+      rows.map(r => `<tr><td>${esc(r.email)}</td><td>${esc(fmt(r.at))}</td></tr>`).join("")
+    }</tbody></table>` : `<p class="empty">No sign-ins recorded yet.</p>`;
+  } catch (e) { $("logList").innerHTML = `<p class="empty">${esc(friendly(e))}</p>`; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lumen Learning</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700;800&family=Public+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<script>if(location.protocol==="file:")document.write('<div class="note" style="margin:0;border-radius:0;text-align:center">You opened this file directly, so sign-in cannot work. Upload all five files to a host, or run <b>npx serve</b> in this folder and open <b>http://localhost:3000</b>.</div>')</script>
+
+<section id="authView" class="auth">
+  <div class="auth-side">
+    <div class="brand"><i></i>Lumen Learning</div>
+    <div>
+      <h1>Pick up where you left off.</h1>
+      <p>Sign in with the email and password your administrator sent you.</p>
+      <div class="path"><span class="f"></span><b class="f"></b><span class="f"></span><b></b><span></span><b></b><span></span></div>
+    </div>
+    <small style="color:#8895b5">Accounts are created by your administrator.</small>
+  </div>
+  <div class="auth-main">
+    <form class="box" id="loginForm">
+      <h2>Sign in</h2>
+      <p>Use your Lumen account.</p>
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="username" required>
+      <label for="pass">Password</label>
+      <input id="pass" type="password" autocomplete="current-password" required>
+      <div class="msg" id="loginMsg" role="alert"></div>
+      <button class="btn full" id="loginBtn" type="submit">Sign in</button>
+      <p style="margin:18px 0 0;font-size:14px"><button type="button" class="link" id="forgotBtn">Forgot your password?</button></p>
+    </form>
+  </div>
+</section>
+
+<section id="appView" class="hidden">
+  <header class="top">
+    <div class="brand"><i></i>Lumen Learning</div>
+    <div class="who"><span id="whoName"></span><span class="tag">Student</span><button class="btn ghost sm" id="logoutBtn">Sign out</button></div>
+  </header>
+  <main class="wrap" id="appMain"></main>
+</section>
+
+<script type="module">
+import { auth, $, esc, fmt, setMsg, friendly, loadProfile, signInAndRecord, signOut, onAuthStateChanged, sendPasswordResetEmail } from "./firebase.js";
+
+let loggingIn = false;
+
+$("loginForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const btn = $("loginBtn"), msg = $("loginMsg");
+  btn.disabled = true; setMsg(msg, ""); loggingIn = true;
+  try {
+    const p = await signInAndRecord($("email").value.trim(), $("pass").value);
+    show(p);
+  } catch (err) { setMsg(msg, friendly(err), "err"); }
+  finally { loggingIn = false; btn.disabled = false; }
+});
+
+$("forgotBtn").addEventListener("click", async () => {
+  const email = $("email").value.trim(), msg = $("loginMsg");
+  if (!email) return setMsg(msg, "Enter your email above first.", "err");
+  try { await sendPasswordResetEmail(auth, email); setMsg(msg, "Password reset email sent. Check your inbox.", "ok"); }
+  catch (err) { setMsg(msg, friendly(err), "err"); }
+});
+
+$("logoutBtn").addEventListener("click", () => signOut(auth));
+
+onAuthStateChanged(auth, async u => {
+  if (loggingIn) return;
+  if (!u) { $("appView").classList.add("hidden"); $("authView").classList.remove("hidden"); return; }
+  try { const p = await loadProfile(u); p ? show(p) : signOut(auth); } catch { signOut(auth); }
+});
+
+const COURSES = [
+  { t:"Intro to Web Development", d:"HTML, CSS and your first page.", lv:"Beginner", p:72 },
+  { t:"JavaScript Essentials", d:"Variables, functions and the DOM.", lv:"Beginner", p:35 },
+  { t:"Data Skills with Spreadsheets", d:"Clean, sort and chart real data.", lv:"Beginner", p:90 },
+  { t:"Communication at Work", d:"Write clearly and present with confidence.", lv:"All levels", p:10 },
+  { t:"Python for Everyone", d:"Automate everyday tasks.", lv:"Intermediate", p:0 },
+  { t:"Project Management Basics", d:"Plan, track and deliver on time.", lv:"Intermediate", p:55 }
+];
+
+function show(me) {
+  if (me.role === "admin") { location.href = "admin.html"; return; }
+  $("authView").classList.add("hidden"); $("appView").classList.remove("hidden");
+  $("whoName").textContent = me.name || me.email;
+  const avg = Math.round(COURSES.reduce((a, c) => a + c.p, 0) / COURSES.length);
+  const active = COURSES.filter(c => c.p > 0 && c.p < 100).length;
+  $("appMain").innerHTML = `
+    <h2>Welcome back, ${esc((me.name || "").split(" ")[0])}</h2>
+    <p class="sub">Signed in ${esc(fmt(me.lastLogin))}</p>
+    <div class="stats">
+      <div class="card"><strong>${active}</strong><span>Courses in progress</span></div>
+      <div class="card"><strong>${avg}%</strong><span>Average progress</span></div>
+      <div class="card"><strong>${me.loginCount ?? 1}</strong><span>Times signed in</span></div>
+    </div>
+    <h3 style="margin-bottom:14px">Your courses</h3>
+    <div class="courses">${COURSES.map(c => `
+      <article class="card course">
+        <span class="chip">${esc(c.lv)}</span>
+        <h3>${esc(c.t)}</h3><p>${esc(c.d)}</p>
+        <div class="bar"><i style="width:${c.p}%"></i></div>
+        <div class="bar-l">${c.p === 0 ? "Not started" : c.p + "% complete"}</div>
+      </article>`).join("")}
+    </div>`;
+}
+</script>
+</body>
+</html>
